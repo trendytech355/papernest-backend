@@ -1,11 +1,13 @@
+import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import express from 'express';
+import rateLimit from 'express-rate-limit';
 import OpenAI from 'openai';
 
 dotenv.config();
 
 const app = express();
+
 app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 
@@ -25,6 +27,17 @@ const ALLOWED_CATEGORIES = [
   'Warranty',
   'Other',
 ];
+
+const analyzeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 25,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Too many requests',
+    details: 'Please wait before analyzing more scans.',
+  },
+});
 
 function normalizeCategory(value) {
   if (!value) return 'Other';
@@ -74,15 +87,32 @@ app.get('/health', (_, res) => {
   res.json({ ok: true });
 });
 
-app.post('/analyze-scan', async (req, res) => {
+app.post('/analyze-scan', analyzeLimiter, async (req, res) => {
   try {
     const { imageBase64 } = req.body;
 
-    if (!imageBase64) {
-      return res.status(400).json({ error: 'Missing imageBase64' });
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      return res.status(400).json({
+        error: 'Missing image',
+        details: 'imageBase64 is required.',
+      });
     }
 
-    console.log('Received imageBase64 length:', imageBase64.length);
+    if (imageBase64.length < 1000) {
+      return res.status(400).json({
+        error: 'Invalid image',
+        details: 'Image data is too small to analyze.',
+      });
+    }
+
+    if (imageBase64.length > 10_000_000) {
+      return res.status(413).json({
+        error: 'Image too large',
+        details: 'Please use a smaller image.',
+      });
+    }
+
+    console.log('Analyze request received. base64 length:', imageBase64.length);
 
     const response = await client.responses.create({
       model: 'gpt-4.1-mini',
@@ -112,8 +142,8 @@ app.post('/analyze-scan', async (req, res) => {
       text: {
         format: {
           type: 'json_schema',
-          name: 'document_extraction',
           strict: true,
+          name: 'document_extraction',
           schema: {
             type: 'object',
             additionalProperties: false,
@@ -160,15 +190,16 @@ app.post('/analyze-scan', async (req, res) => {
       detectedFields,
     });
   } catch (error) {
-    console.error('ANALYZE ERROR:', error);
+    console.error('ANALYZE ERROR:', error?.message || error);
+
     res.status(500).json({
-      error: 'Failed to analyze scan',
-      details: error?.message || 'Unknown error',
+      error: 'Analyze failed',
+      details: 'The server could not analyze the scan.',
     });
   }
 });
 
 const port = process.env.PORT || 3001;
 app.listen(port, () => {
-  console.log(`PaperNest backend running on http://localhost:${port}`);
+  console.log(`PaperNest backend running on port ${port}`);
 });
