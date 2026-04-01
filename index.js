@@ -39,6 +39,13 @@ const analyzeLimiter = rateLimit({
   },
 });
 
+const usageStats = {
+  totalAnalyzeRequests: 0,
+  successfulAnalyzeRequests: 0,
+  failedAnalyzeRequests: 0,
+  lastAnalyzeAt: null,
+};
+
 function normalizeCategory(value) {
   if (!value) return 'Other';
   const trimmed = value.trim();
@@ -87,11 +94,19 @@ app.get('/health', (_, res) => {
   res.json({ ok: true });
 });
 
+app.get('/stats', (_, res) => {
+  res.json(usageStats);
+});
+
 app.post('/analyze-scan', analyzeLimiter, async (req, res) => {
+  usageStats.totalAnalyzeRequests += 1;
+  usageStats.lastAnalyzeAt = new Date().toISOString();
+
   try {
     const { imageBase64 } = req.body;
 
     if (!imageBase64 || typeof imageBase64 !== 'string') {
+      usageStats.failedAnalyzeRequests += 1;
       return res.status(400).json({
         error: 'Missing image',
         details: 'imageBase64 is required.',
@@ -99,6 +114,7 @@ app.post('/analyze-scan', analyzeLimiter, async (req, res) => {
     }
 
     if (imageBase64.length < 1000) {
+      usageStats.failedAnalyzeRequests += 1;
       return res.status(400).json({
         error: 'Invalid image',
         details: 'Image data is too small to analyze.',
@@ -106,6 +122,7 @@ app.post('/analyze-scan', analyzeLimiter, async (req, res) => {
     }
 
     if (imageBase64.length > 10_000_000) {
+      usageStats.failedAnalyzeRequests += 1;
       return res.status(413).json({
         error: 'Image too large',
         details: 'Please use a smaller image.',
@@ -185,11 +202,14 @@ app.post('/analyze-scan', analyzeLimiter, async (req, res) => {
       safeResult.notes ? 'notes' : null,
     ].filter(Boolean);
 
+    usageStats.successfulAnalyzeRequests += 1;
+
     res.json({
       ...safeResult,
       detectedFields,
     });
   } catch (error) {
+    usageStats.failedAnalyzeRequests += 1;
     console.error('ANALYZE ERROR:', error?.message || error);
 
     res.status(500).json({
